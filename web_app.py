@@ -1,5 +1,5 @@
 import streamlit as st
-from auto_rosters import build_auto_rosters, find_pitcher, HANDEDNESS_DATA, normalize_for_match
+from auto_rosters import build_auto_rosters, find_pitcher
 from inning import simulate_inning
 from pitcher import Pitcher
 import random
@@ -10,10 +10,8 @@ import pandas as pd
 
 st.set_page_config(page_title="GreenEye Scout", page_icon="🟢", layout="wide")
 
-# Custom CSS for professional look
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; }
     .game-card {
         background: linear-gradient(135deg, #1a1f2e 0%, #0e1117 100%);
         border: 1px solid #2ecc71;
@@ -28,8 +26,6 @@ st.markdown("""
         margin: 8px 0;
     }
     .team-logo { width: 40px; height: 40px; }
-    .edge-positive { color: #2ecc71; font-weight: bold; }
-    .edge-negative { color: #e74c3c; }
     .best-bet {
         background: linear-gradient(135deg, #1a3a1a 0%, #0e1117 100%);
         border: 2px solid #2ecc71;
@@ -116,9 +112,10 @@ def get_logo_url(team):
     return f"https://a.espncdn.com/i/teamlogos/mlb/500/{abbrev}.png"
 
 
-def get_headshot_url(player_name):
+@st.cache_data(ttl=600)
+def get_headshot_cached(name):
     try:
-        results = statsapi.lookup_player(player_name)
+        results = statsapi.lookup_player(name)
         if results:
             pid = results[0]['id']
             return f"https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_auto:best/v1/people/{pid}/headshot/silo/current"
@@ -152,11 +149,8 @@ def run_sim_detailed(teams, home, away, n, home_sp=None, away_sp=None):
     hw, aw, thr, tar = 0, 0, 0, 0
     trl, margins = [], []
     hrl, arl = 0, 0
-    home_scores, away_scores = [], []
-    # Player prop tracking
     player_hrs = {}
     player_hits = {}
-    player_ks = {}
 
     for sim in range(n):
         hs_total, as_total = 0, 0
@@ -175,20 +169,17 @@ def run_sim_detailed(teams, home, away, n, home_sp=None, away_sp=None):
             hs_total += hr_runs
             if inn >= 9 and hs_total != as_total: break
 
-        # Track player props
         all_stats = {**h_stats, **a_stats}
         for pname, pstats in all_stats.items():
             if pname not in player_hrs: player_hrs[pname] = 0
             if pname not in player_hits: player_hits[pname] = 0
-            if pname not in player_ks: player_ks[pname] = 0
             if pstats["HR"] > 0: player_hrs[pname] += 1
             if pstats["H"] >= 2: player_hits[pname] += 1
-            player_ks[pname] += pstats["SO"]
 
         trl.append(hs_total + as_total)
         margins.append(hs_total - as_total)
-        thr += hs_total; tar += as_total
-        home_scores.append(hs_total); away_scores.append(as_total)
+        thr += hs_total
+        tar += as_total
         if hs_total > as_total:
             hw += 1
             if hs_total - as_total >= 2: hrl += 1
@@ -204,8 +195,7 @@ def run_sim_detailed(teams, home, away, n, home_sp=None, away_sp=None):
     for pname in player_hrs:
         props[pname] = {
             "hr_pct": player_hrs[pname] / n,
-            "multi_hit_pct": player_hits[pname] / n,
-            "avg_ks": player_ks[pname] / n,
+            "multi_hit_pct": player_hits.get(pname, 0) / n,
         }
 
     return {
@@ -216,7 +206,6 @@ def run_sim_detailed(teams, home, away, n, home_sp=None, away_sp=None):
         "home_sp": hp.name, "away_sp": ap.name,
         "pf": pf, "home_throws": hp.throws, "away_throws": ap.throws,
         "total_runs_list": trl, "margins": margins,
-        "home_scores": home_scores, "away_scores": away_scores,
         "props": props,
     }
 
@@ -246,8 +235,8 @@ def get_schedule(date):
             "away": game["away_name"], "home": game["home_name"],
             "away_pitcher": game.get("away_probable_pitcher", "TBD"),
             "home_pitcher": game.get("home_probable_pitcher", "TBD"),
-            "away_score": game.get("away_score", 0),
-            "home_score": game.get("home_score", 0),
+            "away_score": game.get("away_score", 0) or 0,
+            "home_score": game.get("home_score", 0) or 0,
             "status": game.get("status", ""),
             "inning": game.get("current_inning", ""),
             "inning_state": game.get("inning_state", ""),
@@ -255,21 +244,12 @@ def get_schedule(date):
     return games
 
 
-@st.cache_data(ttl=600)
-def get_headshot_cached(name):
-    return get_headshot_url(name)
-
-
-if "bankroll" not in st.session_state:
-    st.session_state.bankroll = 1000.0
-if "bet_history" not in st.session_state:
-    st.session_state.bet_history = []
-if "prediction_history" not in st.session_state:
-    st.session_state.prediction_history = []
+if "bankroll" not in st.session_state: st.session_state.bankroll = 1000.0
+if "bet_history" not in st.session_state: st.session_state.bet_history = []
+if "prediction_history" not in st.session_state: st.session_state.prediction_history = []
 
 teams = load_teams()
 
-# Header
 st.markdown("""
 <div style='text-align: center; padding: 1.5rem 0 0.5rem 0;'>
     <h1 style='color: #2ecc71; margin-bottom: 0; font-size: 2.5rem;'>🟢 GreenEye Scout</h1>
@@ -279,7 +259,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📅 Predictions", "📺 Live Scoreboard", "🔥 Best Bets",
+    "📅 Predictions", "📺 Live Scores", "🔥 Best Bets",
     "🎯 Player Props", "🎰 Parlay", "💰 Bankroll"
 ])
 
@@ -312,15 +292,11 @@ with tab1:
                 away_sp = find_pitcher(game["away_pitcher"]) if game["away_pitcher"] != "TBD" else None
                 result = run_sim_detailed(teams, home, away, num_sims, home_sp, away_sp)
                 all_results.append((away, home, game, result))
-
-                # Save to prediction history
                 st.session_state.prediction_history.append({
                     "date": date, "away": away, "home": home,
                     "away_pct": result["away_pct"], "home_pct": result["home_pct"],
                     "pred_score": f"{result['avg_away']:.1f}-{result['avg_home']:.1f}",
-                    "timestamp": datetime.now().strftime("%m/%d %I:%M%p"),
                 })
-
                 progress.progress((i + 1) / len(games))
 
             for away, home, game, result in all_results:
@@ -357,12 +333,10 @@ with tab1:
                     ch1, ch2 = st.columns(2)
                     with ch1:
                         st.markdown("**Total Runs Distribution**")
-                        runs_df = pd.DataFrame({"Total Runs": result["total_runs_list"]})
-                        st.bar_chart(runs_df["Total Runs"].value_counts().sort_index(), height=200)
+                        st.bar_chart(pd.DataFrame({"Runs": result["total_runs_list"]})["Runs"].value_counts().sort_index(), height=200)
                     with ch2:
                         st.markdown("**Win Margin Distribution**")
-                        margin_df = pd.DataFrame({"Margin": result["margins"]})
-                        st.bar_chart(margin_df["Margin"].value_counts().sort_index(), height=200)
+                        st.bar_chart(pd.DataFrame({"Margin": result["margins"]})["Margin"].value_counts().sort_index(), height=200)
 
                     d1, d2, d3 = st.columns(3)
                     with d1:
@@ -377,32 +351,25 @@ with tab1:
                         st.markdown("**Over/Under**")
                         for line in [6.5, 7.5, 8.5, 9.5]:
                             st.write(f"O/U {line}: Over {result['ou'][line]*100:.1f}%")
-
                 st.markdown("---")
 
-            # Summary table
             st.markdown("### 🟢 Summary")
             summary = []
             for away, home, game, result in all_results:
                 fav = home if result['home_pct'] > result['away_pct'] else away
-                summary.append({
-                    "Matchup": f"{away} @ {home}",
-                    "Favorite": fav,
+                summary.append({"Matchup": f"{away} @ {home}", "Favorite": fav,
                     "Win %": f"{max(result['home_pct'], result['away_pct'])*100:.1f}%",
                     "Score": f"{result['avg_away']:.1f} - {result['avg_home']:.1f}",
-                    "Total": f"{result['avg_total']:.1f}",
-                })
+                    "Total": f"{result['avg_total']:.1f}"})
             st.table(summary)
 
 # ============ TAB 2: LIVE SCOREBOARD ============
 with tab2:
     st.markdown("### 📺 Live Scoreboard")
-    if st.button("🔄 Refresh Scores", key="refresh_scores"):
+    if st.button("🔄 Refresh Scores", key="refresh"):
         st.cache_data.clear()
 
-    date = datetime.now().strftime('%m/%d/%Y')
-    live_games = get_schedule(date)
-
+    live_games = get_schedule(datetime.now().strftime('%m/%d/%Y'))
     if not live_games:
         st.info("No games today")
     else:
@@ -412,23 +379,19 @@ with tab2:
             away_logo = get_logo_url(away)
             home_logo = get_logo_url(home)
             status = game.get("status", "")
-            away_score = game.get("away_score", 0) or 0
-            home_score = game.get("home_score", 0) or 0
+            a_score = game.get("away_score", 0) or 0
+            h_score = game.get("home_score", 0) or 0
             inning = game.get("inning", "")
-            inning_state = game.get("inning_state", "")
+            state = game.get("inning_state", "")
 
             if "Final" in status:
-                status_display = "🏁 Final"
-                status_color = "#888"
-            elif "In Progress" in status or "Live" in status:
-                status_display = f"🔴 LIVE — {inning_state} {inning}"
-                status_color = "#e74c3c"
-            elif "Pre-Game" in status or "Scheduled" in status:
-                status_display = "⏰ Scheduled"
-                status_color = "#f39c12"
+                sdisplay = "🏁 Final"
+            elif "Progress" in status or "Live" in status:
+                sdisplay = f"🔴 LIVE — {state} {inning}"
+            elif "Pre" in status or "Scheduled" in status:
+                sdisplay = "⏰ Scheduled"
             else:
-                status_display = status
-                status_color = "#888"
+                sdisplay = status
 
             st.markdown(f"""
             <div class='score-live'>
@@ -436,11 +399,11 @@ with tab2:
                     <div class='team-header'>
                         <img src='{away_logo}' class='team-logo'>
                         <span style='font-size: 1.1rem;'>{away}</span>
-                        <span style='font-size: 1.5rem; font-weight: bold; margin-left: 10px;'>{away_score}</span>
+                        <span style='font-size: 1.5rem; font-weight: bold; margin-left: 10px;'>{a_score}</span>
                     </div>
-                    <span style='color: {status_color}; font-size: 0.9rem;'>{status_display}</span>
+                    <span style='color: #888; font-size: 0.9rem;'>{sdisplay}</span>
                     <div class='team-header'>
-                        <span style='font-size: 1.5rem; font-weight: bold; margin-right: 10px;'>{home_score}</span>
+                        <span style='font-size: 1.5rem; font-weight: bold; margin-right: 10px;'>{h_score}</span>
                         <span style='font-size: 1.1rem;'>{home}</span>
                         <img src='{home_logo}' class='team-logo'>
                     </div>
@@ -451,128 +414,136 @@ with tab2:
 # ============ TAB 3: BEST BETS ============
 with tab3:
     st.markdown("### 🔥 Best Bets — Auto Edge Finder")
-    st.markdown("*Run predictions first (Tab 1), then the best edges appear here automatically*")
+    st.markdown("*Run predictions first (Tab 1), then best edges appear here*")
 
     if st.session_state.prediction_history:
-        recent = st.session_state.prediction_history[-30:]
         edges = []
-        for pred in recent:
+        for pred in st.session_state.prediction_history[-30:]:
             if pred['home_pct'] > 0.55:
-                edges.append({
-                    "team": pred['home'],
-                    "matchup": f"{pred['away']} @ {pred['home']}",
-                    "win_pct": pred['home_pct'] * 100,
-                    "ml": prob_to_ml(pred['home_pct']),
-                    "date": pred['date'],
-                })
+                edges.append({"team": pred['home'], "matchup": f"{pred['away']} @ {pred['home']}",
+                    "win_pct": pred['home_pct'] * 100, "ml": prob_to_ml(pred['home_pct']), "date": pred['date']})
             if pred['away_pct'] > 0.55:
-                edges.append({
-                    "team": pred['away'],
-                    "matchup": f"{pred['away']} @ {pred['home']}",
-                    "win_pct": pred['away_pct'] * 100,
-                    "ml": prob_to_ml(pred['away_pct']),
-                    "date": pred['date'],
-                })
+                edges.append({"team": pred['away'], "matchup": f"{pred['away']} @ {pred['home']}",
+                    "win_pct": pred['away_pct'] * 100, "ml": prob_to_ml(pred['away_pct']), "date": pred['date']})
 
         edges.sort(key=lambda x: x['win_pct'], reverse=True)
 
         if edges:
-            for i, edge in enumerate(edges[:5]):
+            for edge in edges[:8]:
                 logo = get_logo_url(edge['team'])
-                confidence = "🔥🔥🔥" if edge['win_pct'] > 65 else "🔥🔥" if edge['win_pct'] > 58 else "🔥"
-
+                fire = "🔥🔥🔥" if edge['win_pct'] > 65 else "🔥🔥" if edge['win_pct'] > 58 else "🔥"
                 st.markdown(f"""
                 <div class='best-bet'>
                     <div class='team-header'>
                         <img src='{logo}' class='team-logo'>
-                        <span style='font-size: 1.2rem; font-weight: bold;'>{confidence} {edge['team']}</span>
+                        <span style='font-size: 1.2rem; font-weight: bold;'>{fire} {edge['team']}</span>
                         <span style='color: #2ecc71; font-size: 1.1rem; margin-left: auto;'>{edge['win_pct']:.1f}% ({edge['ml']})</span>
                     </div>
                     <p style='color: #888; margin-top: 5px;'>{edge['matchup']} — {edge['date']}</p>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("No strong edges found. Run predictions with more games.")
+            st.info("No strong edges found yet.")
     else:
-        st.info("Run predictions on Tab 1 first to populate best bets.")
+        st.info("Run predictions on Tab 1 first.")
 
 # ============ TAB 4: PLAYER PROPS ============
 with tab4:
-    st.markdown("### 🎯 Player Props")
+    st.markdown("### 🎯 Player Props — Auto Edge Finder")
 
-    team_list = sorted(teams.keys())
     col1, col2 = st.columns(2)
     with col1:
-        prop_away = st.selectbox("Away Team", team_list, key="prop_away",
-            index=team_list.index("New York Yankees") if "New York Yankees" in team_list else 0)
+        props_date = st.radio("Date", ["Today", "Tomorrow"], horizontal=True, key="props_date")
     with col2:
-        prop_home = st.selectbox("Home Team", team_list, key="prop_home",
-            index=team_list.index("Los Angeles Dodgers") if "Los Angeles Dodgers" in team_list else 1)
+        props_sims = st.select_slider("Simulations", options=[1000, 2500, 5000, 10000], value=5000, key="props_sims2")
 
-    prop_sims = st.select_slider("Simulations", options=[1000, 2500, 5000, 10000], value=5000, key="prop_sims")
-
-    if st.button("🎯 Generate Player Props", type="primary", key="prop_btn"):
-        if prop_away == prop_home:
-            st.error("Pick two different teams!")
+    if st.button("🎯 Find Best Player Props", type="primary", key="auto_props"):
+        if props_date == "Today":
+            pdate = datetime.now().strftime('%m/%d/%Y')
         else:
-            with st.spinner("Simulating for player props..."):
-                result = run_sim_detailed(teams, prop_home, prop_away, prop_sims)
+            pdate = (datetime.now() + timedelta(days=1)).strftime('%m/%d/%Y')
 
-            st.markdown(f"### ⚾ {prop_away} @ {prop_home}")
+        games = get_schedule(pdate)
+        if not games:
+            st.error("No games found")
+        else:
+            progress = st.progress(0)
+            all_props = {}
+            all_matchups = {}
 
-            # Away team props
-            st.markdown(f"**{prop_away} Player Props**")
-            away_logo = get_logo_url(prop_away)
-            st.image(away_logo, width=60)
-
-            for p in teams[prop_away]["batters"]:
-                if p.name in result["props"]:
-                    props = result["props"][p.name]
-                    headshot = get_headshot_cached(p.name)
-
-                    pc1, pc2, pc3, pc4 = st.columns([1, 2, 1, 1])
-                    with pc1:
-                        if headshot:
-                            st.image(headshot, width=60)
-                        else:
-                            st.write("📷")
-                    with pc2:
-                        st.markdown(f"**{p.name}** ({p.bats})")
-                        st.caption(f"AVG: .{int(p.batting_average*1000):03d} | HR Rate: {p.home_run_rate*100:.1f}%")
-                    with pc3:
-                        hr_pct = props['hr_pct'] * 100
-                        st.metric("HR Tonight", f"{hr_pct:.1f}%")
-                    with pc4:
-                        mh_pct = props['multi_hit_pct'] * 100
-                        st.metric("2+ Hits", f"{mh_pct:.1f}%")
+            for i, game in enumerate(games):
+                away = TEAM_NAME_MAP.get(game["away"], game["away"])
+                home = TEAM_NAME_MAP.get(game["home"], game["home"])
+                if home not in teams or away not in teams: continue
+                home_sp = find_pitcher(game["home_pitcher"]) if game["home_pitcher"] != "TBD" else None
+                away_sp = find_pitcher(game["away_pitcher"]) if game["away_pitcher"] != "TBD" else None
+                result = run_sim_detailed(teams, home, away, props_sims, home_sp, away_sp)
+                for pname, pdata in result["props"].items():
+                    all_props[pname] = pdata
+                    all_matchups[pname] = f"{away} @ {home}"
+                progress.progress((i + 1) / len(games))
 
             st.markdown("---")
+            st.markdown("### 💥 Top Home Run Candidates")
+            st.markdown("*Players most likely to go yard tonight*")
 
-            # Home team props
-            st.markdown(f"**{prop_home} Player Props**")
-            home_logo = get_logo_url(prop_home)
-            st.image(home_logo, width=60)
+            hr_sorted = sorted(all_props.items(), key=lambda x: x[1]['hr_pct'], reverse=True)
 
-            for p in teams[prop_home]["batters"]:
-                if p.name in result["props"]:
-                    props = result["props"][p.name]
-                    headshot = get_headshot_cached(p.name)
+            for rank, (name, props) in enumerate(hr_sorted[:15], 1):
+                hr_pct = props['hr_pct'] * 100
+                if hr_pct < 1: continue
+                implied = f"+{round((1 - props['hr_pct']) / props['hr_pct'] * 100)}" if props['hr_pct'] > 0 and props['hr_pct'] < 1 else "N/A"
+                headshot = get_headshot_cached(name)
+                matchup = all_matchups.get(name, "")
+                fire = "🔥🔥🔥" if hr_pct > 12 else "🔥🔥" if hr_pct > 8 else "🔥" if hr_pct > 5 else ""
 
-                    pc1, pc2, pc3, pc4 = st.columns([1, 2, 1, 1])
-                    with pc1:
-                        if headshot:
-                            st.image(headshot, width=60)
-                        else:
-                            st.write("📷")
-                    with pc2:
-                        st.markdown(f"**{p.name}** ({p.bats})")
-                        st.caption(f"AVG: .{int(p.batting_average*1000):03d} | HR Rate: {p.home_run_rate*100:.1f}%")
-                    with pc3:
-                        hr_pct = props['hr_pct'] * 100
-                        st.metric("HR Tonight", f"{hr_pct:.1f}%")
-                    with pc4:
-                        mh_pct = props['multi_hit_pct'] * 100
-                        st.metric("2+ Hits", f"{mh_pct:.1f}%")
+                pc1, pc2, pc3, pc4 = st.columns([1, 3, 1, 1])
+                with pc1:
+                    if headshot:
+                        st.image(headshot, width=55)
+                    else:
+                        st.write(f"**#{rank}**")
+                with pc2:
+                    st.markdown(f"**{name}** {fire}")
+                    st.caption(matchup)
+                with pc3:
+                    st.metric("HR %", f"{hr_pct:.1f}%")
+                with pc4:
+                    st.metric("Implied", implied)
+
+            st.markdown("---")
+            st.markdown("### 🔥 Top Multi-Hit Candidates")
+            st.markdown("*Players most likely to get 2+ hits tonight*")
+
+            hit_sorted = sorted(all_props.items(), key=lambda x: x[1]['multi_hit_pct'], reverse=True)
+
+            for rank, (name, props) in enumerate(hit_sorted[:15], 1):
+                mh_pct = props['multi_hit_pct'] * 100
+                if mh_pct < 5: continue
+                if props['multi_hit_pct'] > 0 and props['multi_hit_pct'] < 1:
+                    implied = f"+{round((1 - props['multi_hit_pct']) / props['multi_hit_pct'] * 100)}" if props['multi_hit_pct'] < 0.5 else f"-{round(props['multi_hit_pct'] / (1 - props['multi_hit_pct']) * 100)}"
+                else:
+                    implied = "N/A"
+                headshot = get_headshot_cached(name)
+                matchup = all_matchups.get(name, "")
+                fire = "🔥🔥🔥" if mh_pct > 35 else "🔥🔥" if mh_pct > 25 else "🔥" if mh_pct > 15 else ""
+
+                pc1, pc2, pc3, pc4 = st.columns([1, 3, 1, 1])
+                with pc1:
+                    if headshot:
+                        st.image(headshot, width=55)
+                    else:
+                        st.write(f"**#{rank}**")
+                with pc2:
+                    st.markdown(f"**{name}** {fire}")
+                    st.caption(matchup)
+                with pc3:
+                    st.metric("2+ Hits", f"{mh_pct:.1f}%")
+                with pc4:
+                    st.metric("Implied", implied)
+
+            st.markdown("---")
+            st.info("💡 Compare implied odds above to your sportsbook. If the book offers better odds than the sim implies, that's a value bet.")
 
 # ============ TAB 5: PARLAY ============
 with tab5:
@@ -596,12 +567,10 @@ with tab5:
         if len(legs) >= 2:
             for i, leg in enumerate(legs):
                 st.write(f"**Leg {i+1}:** {leg['team']} ({leg['odds']:+d}) — {leg['prob']*100:.1f}%")
-
             st.markdown("---")
             r1, r2 = st.columns(2)
             r1.metric("Combined Probability", f"{combined_prob*100:.1f}%")
             r2.metric("Parlay Odds", prob_to_ml(combined_prob))
-
             wager = st.number_input("Wager ($)", min_value=1.0, value=100.0, step=10.0, key="p_wager")
             if combined_prob > 0:
                 payout = wager / combined_prob
@@ -610,7 +579,6 @@ with tab5:
 # ============ TAB 6: BANKROLL ============
 with tab6:
     st.markdown("### 💰 Bankroll Tracker")
-
     b1, b2 = st.columns(2)
     with b1:
         st.metric("Bankroll", f"${st.session_state.bankroll:.2f}")
@@ -653,8 +621,7 @@ with tab6:
 
     if st.session_state.bet_history:
         st.markdown("---")
-        hist_df = pd.DataFrame(st.session_state.bet_history)
-        hist_df = hist_df[["date", "team", "amount", "odds", "result", "profit"]]
+        hist_df = pd.DataFrame(st.session_state.bet_history)[["date", "team", "amount", "odds", "result", "profit"]]
         hist_df.columns = ["Date", "Bet", "Amount", "Odds", "Result", "Profit"]
         st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
@@ -677,4 +644,4 @@ with tab6:
             st.rerun()
 
 st.markdown("---")
-st.markdown("<center><small style='color: #444;'>🟢 GreenEye Scout v2.0 — Built from scratch</small></center>", unsafe_allow_html=True)
+st.markdown("<center><small style='color: #444;'>🟢 GreenEye Scout v2.0</small></center>", unsafe_allow_html=True)
